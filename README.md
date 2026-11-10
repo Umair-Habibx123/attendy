@@ -14,7 +14,7 @@
 
 | Splash | Sign in | Member history |
 | :---: | :---: | :---: |
-| <img src="docs/screenshots/splash.jpg" width="200" alt="Attendy splash screen with the logo and "Attendance made simple""> | <img src="docs/screenshots/login.jpg" width="200" alt="Sign-in screen with email, password, forgot password and create account"> | <img src="docs/screenshots/user-history.jpg" width="200" alt="Month calendar coloured by status, with present, absent and leave totals"> |
+| <img src="docs/screenshots/splash.jpg" width="200" alt="Attendy splash screen with the logo and the tagline Attendance made simple"> | <img src="docs/screenshots/login.jpg" width="200" alt="Sign-in screen with email, password, forgot password and create account"> | <img src="docs/screenshots/user-history.jpg" width="200" alt="Month calendar coloured by status, with present, absent and leave totals"> |
 | **Admin: today** | **Admin: leave inbox** | **Admin: profile** |
 | <img src="docs/screenshots/admin-home.jpg" width="200" alt="Admin dashboard with present, on leave, absent and not-checked-in counts"> | <img src="docs/screenshots/admin-leave.jpg" width="200" alt="Leave requests inbox with Pending, Approved and Rejected tabs"> | <img src="docs/screenshots/profile.jpg" width="200" alt="Admin profile with change name, work schedule, change password and sign out"> |
 
