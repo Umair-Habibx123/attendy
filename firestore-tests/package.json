@@ -1,0 +1,14 @@
+{
+  "name": "attendy-firestore-rules-tests",
+  "private": true,
+  "type": "module",
+  "description": "Runs firestore.rules in the local emulator and checks who can do what.",
+  "scripts": {
+    "test": "firebase emulators:exec --only firestore --project demo-attendy \"node --test rules.test.js\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
+    "firebase": "^13.2.0",
+    "firebase-tools": "^14.0.0"
+  }
+}

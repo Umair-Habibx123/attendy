@@ -1,0 +1,32 @@
+# Opens pull requests for new releases of pinned actions, Dart packages and the
+# rules-test tools. Major versions are skipped: they often break the build and
+# need a manual, tested upgrade.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: pub
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      dart-packages:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /firestore-tests
+    schedule:
+      interval: monthly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      rules-test-tools:
+        patterns: ["*"]

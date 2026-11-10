@@ -1,0 +1,148 @@
+rules_version = '2';
+
+// Attendy security rules. These, not the app, decide who can do what:
+//  - Everyone signs up as a regular user; only admins can promote or deactivate.
+//  - A user can mark themselves present for TODAY only, judged by the server's
+//    clock in the organisation's time zone (UTC+5), so changing the phone's
+//    date can't fake attendance. Users can never edit or delete a day.
+//  - Leave is requested by users and decided by admins.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function verified() { return request.auth.token.email_verified == true; }
+    function profile() { return get(/databases/$(database)/documents/users/$(uid())).data; }
+    function hasProfile() { return exists(/databases/$(database)/documents/users/$(uid())); }
+    function isActive() { return signedIn() && hasProfile() && profile().active == true; }
+    function isAdmin() { return isActive() && profile().role == 'admin'; }
+
+    // Today's date as yyyy-MM-dd in the organisation's time zone (UTC+5).
+    // Keep the offset in sync with AppConfig.orgUtcOffset in the app.
+    function pad(n) { return n < 10 ? '0' + string(n) : string(n); }
+    function orgToday() {
+      let t = request.time + duration.value(5, 'h');
+      return string(t.year()) + '-' + pad(t.month()) + '-' + pad(t.day());
+    }
+    function isDayKey(s) { return s is string && s.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+
+    function validName(n) { return n is string && n.size() >= 1 && n.size() <= 60; }
+    // Profile photos are small base64 thumbnails (keeps documents far below 1 MB).
+    function validPhoto(p) { return p == null || (p is string && p.size() <= 150000); }
+
+    // ---------- users/{userId} ----------
+    match /users/{userId} {
+      allow read: if signedIn() && (uid() == userId || isAdmin());
+
+      // Self sign-up: always a regular, active user, with the account's own email.
+      allow create: if signedIn() && uid() == userId
+        && request.resource.data.keys().hasOnly(['name', 'email', 'role', 'active', 'photo', 'createdAt'])
+        && validName(request.resource.data.name)
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.role == 'user'
+        && request.resource.data.active == true
+        && validPhoto(request.resource.data.get('photo', null))
+        && request.resource.data.createdAt == request.time;
+
+      // A user edits only their own name and photo; an admin changes only
+      // another user's role or active flag (never their own, so an admin
+      // can't lock everyone out by demoting themselves).
+      allow update: if (
+          signedIn() && uid() == userId && isActive()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'photo'])
+          && validName(request.resource.data.name)
+          && validPhoto(request.resource.data.get('photo', null))
+        ) || (
+          isAdmin() && uid() != userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'active'])
+          && request.resource.data.role in ['user', 'admin']
+          && request.resource.data.active is bool
+        );
+
+      allow delete: if false; // deactivate instead; keeps attendance history intact
+    }
+
+    // ---------- attendance/{userId}/days/{date} ----------
+    function validDay(userId, date) {
+      return request.resource.data.keys().hasOnly(['uid', 'date', 'status', 'markedAt', 'markedBy'])
+        && isDayKey(date)
+        && request.resource.data.uid == userId
+        && request.resource.data.date == date
+        && request.resource.data.markedAt == request.time
+        && request.resource.data.markedBy == uid();
+    }
+
+    match /attendance/{userId}/days/{date} {
+      allow read: if signedIn() && ((uid() == userId && isActive()) || isAdmin());
+
+      // Users: present, today only, once. Admins: any status, any day.
+      allow create: if (
+          uid() == userId && isActive() && verified()
+          && validDay(userId, date)
+          && date == orgToday()
+          && request.resource.data.status == 'present'
+        ) || (
+          isAdmin() && validDay(userId, date)
+          && request.resource.data.status in ['present', 'absent', 'leave']
+        );
+
+      allow update: if isAdmin() && validDay(userId, date)
+        && request.resource.data.status in ['present', 'absent', 'leave'];
+
+      allow delete: if isAdmin();
+    }
+
+    // Admin dashboards and reports query all users' days at once.
+    match /{path=**}/days/{date} {
+      allow read: if isAdmin();
+    }
+
+    // ---------- settings/organization ----------
+    // The work schedule (working weekdays and holidays), set by admins.
+    match /settings/{docId} {
+      allow read: if isActive();
+      allow write: if isAdmin() && docId == 'organization'
+        && request.resource.data.keys().hasOnly(['workingDays', 'holidays', 'holidayNames', 'updatedAt', 'updatedBy'])
+        && request.resource.data.workingDays is list
+        && request.resource.data.workingDays.size() >= 1
+        && request.resource.data.workingDays.size() <= 7
+        && request.resource.data.workingDays.hasOnly([1, 2, 3, 4, 5, 6, 7])
+        && request.resource.data.holidays is list
+        && request.resource.data.holidays.size() <= 400
+        && (!('holidayNames' in request.resource.data) || (request.resource.data.holidayNames is map && request.resource.data.holidayNames.size() <= 400))
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedBy == uid();
+    }
+
+    // ---------- leaveRequests/{requestId} ----------
+    match /leaveRequests/{requestId} {
+      allow read: if signedIn() && (resource.data.uid == uid() || isAdmin());
+
+      allow create: if isActive() && verified()
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'from', 'to', 'reason', 'status', 'createdAt'])
+        && request.resource.data.uid == uid()
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && validName(request.resource.data.name)
+        && isDayKey(request.resource.data.from)
+        && isDayKey(request.resource.data.to)
+        && request.resource.data.from >= orgToday()
+        && request.resource.data.to >= request.resource.data.from
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 3
+        && request.resource.data.reason.size() <= 500;
+
+      // Admins decide pending requests; a decision is final.
+      allow update: if isAdmin() && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'decidedAt', 'decidedBy', 'adminNote'])
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.decidedAt == request.time
+        && request.resource.data.decidedBy == uid()
+        && (!('adminNote' in request.resource.data) || (request.resource.data.adminNote is string && request.resource.data.adminNote.size() <= 300));
+
+      // Users can withdraw their own request while it's still pending.
+      allow delete: if signedIn() && resource.data.uid == uid() && resource.data.status == 'pending';
+    }
+  }
+}

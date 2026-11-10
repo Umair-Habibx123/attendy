@@ -1,0 +1,104 @@
+# Builds a signed release APK and publishes it as a GitHub Release.
+# Trigger: push a version tag, e.g.  git tag v1.2.0 && git push origin v1.2.0
+#
+# Repository secrets needed (Settings > Secrets and variables > Actions):
+#   GOOGLE_SERVICES_JSON_BASE64  android/app/google-services.json, base64-encoded
+#   DOTENV_BASE64                the app's .env (FIREBASE_* values), base64-encoded
+#   ANDROID_KEYSTORE_BASE64      the release keystore (.jks), base64-encoded
+#   ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+name: Release APK
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v1.2.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # needed to create the release
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+
+      - name: Write Firebase config, .env and signing files from secrets
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          DOTENV_BASE64: ${{ secrets.DOTENV_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > android/app/google-services.json
+          echo "$DOTENV_BASE64" | base64 --decode > .env
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/release.jks
+          # Check the signing secrets now, so a bad paste fails in seconds with a clear message.
+          if ! keytool -list -keystore android/app/release.jks -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null 2>&1; then
+            echo "::error::Signing secrets don't match. ANDROID_KEYSTORE_BASE64 must be the full contents of release.jks.base64.txt (one long line), and ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS must come from the same SECRETS-README.txt."
+            echo "Decoded keystore size: $(wc -c < android/app/release.jks) bytes"
+            exit 1
+          fi
+          {
+            echo "storeFile=release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > android/key.properties
+
+      # The release build (R8 + Firebase + many plugins) can exhaust the
+      # runner's memory with the project's 8 GB Gradle heap plus a separate
+      # Kotlin daemon. User-level settings override the project's, and also
+      # apply when rebuilding an older tag.
+      - name: Tune Gradle memory for CI
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1536m -XX:+UseParallelGC -XX:+HeapDumpOnOutOfMemoryError
+          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.workers.max=2
+          EOF
+
+      - run: flutter pub get
+      - run: flutter test
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="Attendy-${TAG}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "$apk"
+          sha256sum "$apk" > "$apk.sha256"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$apk" "$apk.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$apk" "$apk.sha256" --repo "$GITHUB_REPOSITORY" \
+              --title "Attendy $TAG" --generate-notes
+          fi
